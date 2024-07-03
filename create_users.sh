@@ -1,44 +1,65 @@
 #!/bin/bash
 
-LOG_FILE="/var/log/user_management.log"
+# Log file location
+LOGFILE="/var/log/user_management.log"
 PASSWORD_FILE="/var/secure/user_passwords.csv"
-USER_FILE="$1"
 
-# Check if the user file is provided
-if [ -z "$USER_FILE" ]; then
-    echo "Usage: $0 <name-of-text-file>"
-    exit 1
+# Check if the input file is provided
+if [ -z "$1" ]; then
+  echo "Error: No file was provided"
+  echo "Usage: $0 <name-of-text-file>"
+  exit 1
 fi
 
-# Create necessary directories
+# Create log and password files
 mkdir -p /var/secure
-touch "$LOG_FILE"
-touch "$PASSWORD_FILE"
-chmod 600 "$PASSWORD_FILE"
+touch $LOGFILE $PASSWORD_FILE
+chmod 600 $PASSWORD_FILE
 
-while IFS=';' read -r username groups; do
-    # Remove whitespace
-    username=$(echo "$username" | xargs)
-    groups=$(echo "$groups" | xargs)
+generate_random_password() {
+    local length=${1:-10} # Default length is 10 if no argument is provided
+    LC_ALL=C tr -dc 'A-Za-z0-9!?%+=' < /dev/urandom | head -c $length
+}
 
-    # Create user and personal group
-    if id "$username" &>/dev/null; then
-        echo "User $username already exists." | tee -a "$LOG_FILE"
-    else
-        useradd -m -s /bin/bash -G "$groups" "$username"
-        echo "User $username created." | tee -a "$LOG_FILE"
-        
-        # Create a random password
-        password=$(openssl rand -base64 12)
-        echo "$username:$password" | chpasswd
-        echo "$username,$password" >> "$PASSWORD_FILE"
+# Function to create a user
+create_user() {
+  local username=$1
+  local groups=$2
 
-        # Set up home directory permissions
-        chown "$username:$username" "/home/$username"
-        chmod 700 "/home/$username"
+  if getent passwd "$username" > /dev/null; then
+    echo "User $username already exists" | tee -a $LOGFILE
+  else
+    useradd -m $username
+    echo "Created user $username" | tee -a $LOGFILE
+  fi
 
-        echo "User $username added to groups: $groups" | tee -a "$LOG_FILE"
+  # Add user to specified groupsgroup
+  groups_array=($(echo $groups | tr "," "\n"))
+
+  for group in "${groups_array[@]}"; do
+    if ! getent group "$group" >/dev/null; then
+      groupadd "$group"
+      echo "Created group $group" | tee -a $LOGFILE      
     fi
-done < "$USER_FILE"
+    usermod -aG "$group" "$username"
+    echo "Added user $username to group $group" | tee -a $LOGFILE
+  done
 
-echo "User creation process completed." | tee -a "$LOG_FILE"
+  # Set up home directory permissions
+  chmod 700 /home/$username
+  chown $username:$username /home/$username
+  echo "Set up home directory for user $username" | tee -a $LOGFILE
+
+  # Generate a random password
+  password=$(generate_random_password 12) 
+  echo "$username:$password" | chpasswd
+  echo "$username,$password" >> $PASSWORD_FILE
+  echo "Set password for user $username" | tee -a $LOGFILE
+}
+
+# Read the input file and create users
+while IFS=';' read -r username groups; do
+  create_user "$username" "$groups"
+done < "$1"
+
+echo "User creation process completed." | tee -a $LOGFILE
